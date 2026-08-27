@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -57,6 +57,37 @@ def unload_model():
 
     return {
         "status": "Model unloaded"
+    }
+
+@app.post("/generate-image")
+async def generate_image(
+        prompt: str = Form(...),
+        image: UploadFile = File(...),
+):
+    model = model_manager.models["qwen-vision"]
+
+    if model.pipe is None:
+        model.load()
+
+    image_bytes = await image.read()
+
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+            suffix=".png",
+            delete=True
+    ) as temp:
+        temp.write(image_bytes)
+        temp.flush()
+
+        response = model.generate(
+            temp.name,
+            prompt
+        )
+
+    return {
+        "model": "Qwen3-VL-2B-Instruct",
+        "response": response,
     }
 
 

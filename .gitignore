@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ignore all XML files in a specific generated folder
+path/to/generated_output/*.xml
+
+# Or ignore all XML files if they are only generated dynamically
+*.xml
+*.iml
+

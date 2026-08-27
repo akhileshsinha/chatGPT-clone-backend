@@ -2,6 +2,7 @@ import gc
 import torch
 
 from models.qwen_model import QwenModel
+from models.qwen_vision_model import QwenVisionModel
 
 
 class ModelManager:
@@ -13,6 +14,7 @@ class ModelManager:
 
         self.models = {
             "qwen": QwenModel(),
+            "qwen-vision": QwenVisionModel(),
         }
 
     def load(self, model_name):
