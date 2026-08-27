@@ -24,11 +24,6 @@ app.add_middleware(
 model_manager = ModelManager()
 job_service = LinkedInJobService()
 
-@app.get("/getLatestJobs")
-def get_latest_news():
-
-    return job_service.get_active_jobs()
-
 class GenerateRequest(BaseModel):
     prompt: str
     model: str = "qwen"
