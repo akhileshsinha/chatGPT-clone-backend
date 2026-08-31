@@ -29,17 +29,16 @@ class GenerateRequest(BaseModel):
     model: str = "qwen"
 
 
+
 @app.post("/generate")
 def generate(request: GenerateRequest):
-
-    model_manager.switch(request.model)
 
     response = model_manager.generate(
         request.prompt
     )
 
     return {
-        "model": request.model,
+        "model": "qwen",
         "response": response,
     }
 
@@ -49,6 +48,19 @@ def get_models():
 
     return model_manager.get_status()
 
+class SwitchModelRequest(BaseModel):
+    model: str
+
+
+@app.post("/models/switch")
+def switch_model(request: SwitchModelRequest):
+
+    model_manager.switch(request.model)
+
+    return {
+        "model": request.model,
+        "status": "loaded",
+    }
 
 @app.post("/models/unload")
 def unload_model():
@@ -64,10 +76,10 @@ async def generate_image(
         prompt: str = Form(...),
         image: UploadFile = File(...),
 ):
-    model = model_manager.models["qwen-vision"]
 
-    if model.pipe is None:
-        model.load()
+    model_manager.switch("qwen-vision")
+
+    model = model_manager.models["qwen-vision"]
 
     image_bytes = await image.read()
 
@@ -77,6 +89,7 @@ async def generate_image(
             suffix=".png",
             delete=True
     ) as temp:
+
         temp.write(image_bytes)
         temp.flush()
 
@@ -91,3 +104,18 @@ async def generate_image(
     }
 
 
+class GenerateCodeRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/generate-code")
+def generate_code(request: GenerateCodeRequest):
+
+    response = model_manager.generate(
+        request.prompt
+    )
+
+    return {
+        "model": "qwen-coder",
+        "response": response,
+    }
