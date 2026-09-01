@@ -33,6 +33,7 @@ class GenerateRequest(BaseModel):
 @app.post("/generate")
 def generate(request: GenerateRequest):
 
+    model_manager.switch("qwen")
     response = model_manager.generate(
         request.prompt
     )
@@ -110,7 +111,7 @@ class GenerateCodeRequest(BaseModel):
 
 @app.post("/generate-code")
 def generate_code(request: GenerateCodeRequest):
-
+    model_manager.switch("qwen-coder")
     response = model_manager.generate(
         request.prompt
     )
