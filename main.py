@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -126,14 +127,31 @@ def generate_code(request: GenerateCodeRequest):
 
 class GenerateProjectRequest(BaseModel):
     prompt: str
+    workspace: Optional[dict] = None
+
+
+class WorkspaceFile(BaseModel):
+    path: str
+    content: str
+
+class Workspace(BaseModel):
+    files: list[WorkspaceFile] = []
+
 
 @app.post("/generate-project")
 def generate_project(request: GenerateProjectRequest):
 
     model_manager.switch("qwen-coder")
 
+    workspace_files = (
+        request.workspace.get("files", [])
+        if request.workspace
+        else []
+    )
+
     response = model_manager.generate_project(
-        request.prompt
+        request.prompt,
+        workspace_files,
     )
 
     return response

@@ -78,14 +78,12 @@ class ModelManager:
             prompt
         )
 
-    def generate_project(self, prompt):
-
+    def generate_project(self, prompt, workspace=None):
         self.switch("qwen-coder")
 
-        return self.models[
-            "qwen-coder"
-        ].generate_project(
-            prompt
+        return self.models["qwen-coder"].generate_project(
+            prompt,
+            workspace
         )
 
     def get_status(self):

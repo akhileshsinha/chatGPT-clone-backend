@@ -1,4 +1,3 @@
-import gc
 import json
 import re
 
@@ -17,10 +16,6 @@ class QwenCoderModel:
     # ============================================================
 
     def load(self):
-
-        if self.pipe is not None:
-            return
-
         print(
             "Loading Qwen2.5-Coder-7B-Instruct..."
         )
@@ -45,7 +40,6 @@ class QwenCoderModel:
         code = ""
 
         if "EXPLANATION:" in response:
-
             response = response.split(
                 "EXPLANATION:",
                 1
@@ -91,16 +85,12 @@ class QwenCoderModel:
                     ):
                         lines = lines[1:]
 
-                    code = "\n".join(
-                        lines
-                    ).strip()
+                    code = "\n".join(lines).strip()
 
             else:
-
                 code = code_part
 
         else:
-
             explanation = response
 
         return {
@@ -109,7 +99,7 @@ class QwenCoderModel:
         }
 
     # ============================================================
-    # Existing single-code generation
+    # Existing single-file code generation
     # ============================================================
 
     def generate(self, prompt):
@@ -158,26 +148,85 @@ class QwenCoderModel:
             do_sample=False,
         )
 
-        generated = result[0][
-            "generated_text"
-        ]
+        generated = result[0]["generated_text"]
 
         response = generated[
             len(prompt_text):
         ].strip()
 
-        return self.parse_response(
-            response
-        )
+        return self.parse_response(response)
 
     # ============================================================
-    # Project generation
+    # Project / Agent generation
     # ============================================================
 
-    def generate_project(self, prompt):
+    def generate_project(
+            self,
+            prompt,
+            workspace_files=None,
+    ):
 
         if self.pipe is None:
             self.load()
+
+        if workspace_files is None:
+            workspace_files = []
+
+        # ------------------------------------------------------------
+        # Select the most relevant files for the user's request
+        # ------------------------------------------------------------
+
+        from services.workspace_service import WorkspaceService
+
+        workspace_service = WorkspaceService()
+
+        relevant_paths = workspace_service.rank_files(
+            prompt,
+            workspace_files,
+            limit=10,
+        )
+
+        all_paths = [
+            file_data["path"]
+            for file_data in workspace_files
+        ]
+
+        relevant_path_set = set(relevant_paths)
+
+        unloaded_paths = [
+            path
+            for path in all_paths
+            if path not in relevant_path_set
+        ]
+
+        relevant_files = [
+            file_data
+            for file_data in workspace_files
+            if file_data.get("path") in relevant_path_set
+        ]
+
+        # ------------------------------------------------------------
+        # Build context from relevant files
+        # ------------------------------------------------------------
+
+        workspace_context = "\n\n".join(
+            f"""
+        FILE: {file_data["path"]}
+
+        CONTENT:
+        {file_data["content"]}
+        """.strip()
+            for file_data in relevant_files
+        )
+
+        if not workspace_context:
+            workspace_context = (
+                "(Workspace is empty or no relevant files were found.)"
+            )
+
+        # ------------------------------------------------------------
+        # Build model messages
+        # ------------------------------------------------------------
 
         messages = [
             {
@@ -186,18 +235,19 @@ class QwenCoderModel:
                     "You are an expert software architect "
                     "and autonomous coding agent.\n\n"
 
-                    "Your task is to design a complete software "
-                    "project based on the user's request.\n\n"
+                    "Your job is to analyze the user's request "
+                    "and produce a precise set of file operations "
+                    "for the existing software workspace.\n\n"
 
-                    "The user may ask you to create applications "
-                    "using technologies such as React, Node.js, "
-                    "Python, Express, TypeScript, etc.\n\n"
+                    "You have access to relevant existing files "
+                    "from the workspace, including their actual "
+                    "contents.\n\n"
 
-                    "Return ONLY valid JSON.\n"
+                    "You MUST return ONLY valid JSON.\n"
                     "Do NOT use Markdown.\n"
                     "Do NOT wrap the JSON in ```json fences.\n\n"
 
-                    "The JSON MUST have exactly this general structure:\n\n"
+                    "The JSON MUST have exactly this structure:\n\n"
 
                     "{\n"
                     '  "message": "short explanation",\n'
@@ -206,47 +256,49 @@ class QwenCoderModel:
                     '      "type": "create_file",\n'
                     '      "path": "relative/path/to/file",\n'
                     '      "content": "complete file content"\n'
+                    "    },\n"
+                    "    {\n"
+                    '      "type": "modify_file",\n'
+                    '      "path": "relative/path/to/file",\n'
+                    '      "content": "complete new file content"\n'
+                    "    },\n"
+                    "    {\n"
+                    '      "type": "delete_file",\n'
+                    '      "path": "relative/path/to/file"\n'
                     "    }\n"
                     "  ]\n"
                     "}\n\n"
 
-                    "Rules:\n"
-
-                    "1. Use ONLY relative file paths.\n"
-
+                    "ACTION RULES:\n"
+                    "1. Use only relative file paths.\n"
                     "2. Never use absolute paths.\n"
+                    "3. Use forward slashes in paths.\n"
+                    "4. Use create_file only when the file does not already exist.\n"
+                    "5. Use modify_file when an existing file must be changed.\n"
+                    "6. For modify_file, return the COMPLETE new content of the file, not a patch.\n"
+                    "7. Use delete_file only when the user request requires removing a file.\n"
+                    "8. Do not delete files unnecessarily.\n"
+                    "9. Include all important files required to complete the user's request.\n"
+                    "10. Do not create unnecessary files.\n"
+                    "11. Do not execute commands yourself.\n"
+                    "12. Do not describe commands instead of creating the required file actions.\n"
+                    "13. Preserve existing project structure whenever possible.\n"
+                    "14. Do not overwrite an existing file with create_file.\n"
+                    "15. Always return complete file contents for create_file and modify_file.\n"
+                    "16. Return an empty actions array if no file changes are required.\n"
+                    "17. The output must be valid JSON.\n"
+                    "18. Before modifying a file, use its actual content from the workspace.\n"
+                    "19. Never invent existing file contents when the file is provided.\n"
+                    "20. For modify_file, preserve unrelated existing code.\n"
+                    "21. Make the smallest reasonable change required by the user request.\n"
+                    "22. Never use create_file for a file listed in the existing workspace.\n"
+                    "23. Never use modify_file for a file that does not exist.\n\n"
 
-                    "3. Never use paths beginning with /.\n"
+                    "RELEVANT EXISTING FILES:\n"
+                    f"{workspace_context}\n\n"
 
-                    "4. Never use paths containing ../.\n"
-
-                    "5. Every create_file action must contain "
-                    "the COMPLETE file content.\n"
-
-                    "6. Include all important files required "
-                    "for the requested project.\n"
-
-                    "7. Include package.json when the project "
-                    "requires npm dependencies.\n"
-
-                    "8. Include configuration files when they "
-                    "are required to run the project.\n"
-
-                    "9. Do not create unnecessary files.\n"
-
-                    "10. Do not execute commands yourself.\n"
-
-                    "11. Do not describe commands instead of "
-                    "creating the required files.\n"
-
-                    "12. Do not return Markdown.\n"
-
-                    "13. Do not return code fences.\n"
-
-                    "14. Do not put comments or explanations "
-                    "outside the JSON.\n"
-
-                    "15. The output MUST be valid JSON."
+                    "OTHER EXISTING WORKSPACE FILES:\n"
+                    f"{chr(10).join(unloaded_paths)}\n"
                 ),
             },
             {
@@ -254,6 +306,10 @@ class QwenCoderModel:
                 "content": prompt,
             },
         ]
+
+        # ------------------------------------------------------------
+        # Generate response
+        # ------------------------------------------------------------
 
         prompt_text = (
             self.pipe.tokenizer.apply_chat_template(
@@ -269,9 +325,7 @@ class QwenCoderModel:
             do_sample=False,
         )
 
-        generated = result[0][
-            "generated_text"
-        ]
+        generated = result[0]["generated_text"]
 
         response = generated[
             len(prompt_text):
@@ -287,14 +341,13 @@ class QwenCoderModel:
 
     def parse_project_response(
             self,
-            response
+            response,
     ):
 
         cleaned = response.strip()
 
         # --------------------------------------------------------
-        # Remove Markdown JSON fences if model accidentally adds
-        # them.
+        # Remove accidental Markdown JSON fences
         # --------------------------------------------------------
 
         if cleaned.startswith("```"):
@@ -320,14 +373,12 @@ class QwenCoderModel:
 
         try:
 
-            data = json.loads(
-                cleaned
-            )
+            data = json.loads(cleaned)
 
         except json.JSONDecodeError:
 
             # ----------------------------------------------------
-            # Try extracting JSON object from surrounding text
+            # Try extracting JSON object
             # ----------------------------------------------------
 
             start = cleaned.find("{")
@@ -357,7 +408,7 @@ class QwenCoderModel:
                 )
 
         # --------------------------------------------------------
-        # Validate root object
+        # Validate top-level structure
         # --------------------------------------------------------
 
         if not isinstance(data, dict):
@@ -366,40 +417,25 @@ class QwenCoderModel:
                 "Project response must be a JSON object."
             )
 
-        # --------------------------------------------------------
-        # Message
-        # --------------------------------------------------------
-
         message = data.get(
             "message",
             "",
         )
-
-        if not isinstance(
-                message,
-                str,
-        ):
-            message = str(
-                message
-            )
-
-        # --------------------------------------------------------
-        # Actions
-        # --------------------------------------------------------
 
         actions = data.get(
             "actions",
             [],
         )
 
-        if not isinstance(
-                actions,
-                list,
-        ):
+        if not isinstance(actions, list):
 
             raise ValueError(
                 "Project actions must be an array."
             )
+
+        # --------------------------------------------------------
+        # Validate individual actions
+        # --------------------------------------------------------
 
         validated_actions = []
 
@@ -425,65 +461,67 @@ class QwenCoderModel:
             )
 
             # ----------------------------------------------------
-            # Currently we only support create_file.
+            # CREATE FILE
             # ----------------------------------------------------
 
-            if action_type != "create_file":
-                continue
+            if action_type == "create_file":
 
-            if not isinstance(
-                    path,
-                    str,
-            ):
-                continue
+                if not path:
+                    continue
 
-            path = path.strip()
+                if not isinstance(
+                        content,
+                        str,
+                ):
+                    content = str(
+                        content
+                    )
 
-            if not path:
-                continue
-
-            # ----------------------------------------------------
-            # Security validation
-            # ----------------------------------------------------
-
-            if path.startswith("/"):
-                continue
-
-            if path.startswith("\\"):
-                continue
-
-            normalized_path = path.replace(
-                "\\",
-                "/",
-            )
-
-            if ".." in normalized_path.split("/"):
-
-                continue
-
-            # ----------------------------------------------------
-            # Normalize content
-            # ----------------------------------------------------
-
-            if not isinstance(
-                    content,
-                    str,
-            ):
-
-                content = str(
-                    content
-                )
-
-            validated_actions.append(
-                {
+                validated_actions.append({
                     "type": "create_file",
-                    "path": normalized_path,
+                    "path": path,
                     "content": content,
-                }
-            )
+                })
+
+            # ----------------------------------------------------
+            # MODIFY FILE
+            # ----------------------------------------------------
+
+            elif action_type == "modify_file":
+
+                if not path:
+                    continue
+
+                if not isinstance(
+                        content,
+                        str,
+                ):
+                    content = str(
+                        content
+                    )
+
+                validated_actions.append({
+                    "type": "modify_file",
+                    "path": path,
+                    "content": content,
+                })
+
+            # ----------------------------------------------------
+            # DELETE FILE
+            # ----------------------------------------------------
+
+            elif action_type == "delete_file":
+
+                if not path:
+                    continue
+
+                validated_actions.append({
+                    "type": "delete_file",
+                    "path": path,
+                })
 
         # --------------------------------------------------------
-        # Return structured project
+        # Return normalized project response
         # --------------------------------------------------------
 
         return {
@@ -507,9 +545,3 @@ class QwenCoderModel:
         del self.pipe
 
         self.pipe = None
-
-        gc.collect()
-
-        print(
-            "Qwen2.5-Coder-7B-Instruct unloaded."
-        )
