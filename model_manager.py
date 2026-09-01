@@ -57,7 +57,9 @@ class ModelManager:
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
 
-        print("Model memory released.")
+        print(
+            "Model memory released."
+        )
 
     def switch(self, model_name):
 
@@ -72,7 +74,19 @@ class ModelManager:
         if self.current_model is None:
             self.load("qwen")
 
-        return self.current_model.generate(prompt)
+        return self.current_model.generate(
+            prompt
+        )
+
+    def generate_project(self, prompt):
+
+        self.switch("qwen-coder")
+
+        return self.models[
+            "qwen-coder"
+        ].generate_project(
+            prompt
+        )
 
     def get_status(self):
 

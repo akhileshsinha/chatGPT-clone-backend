@@ -123,3 +123,17 @@ def generate_code(request: GenerateCodeRequest):
         "response": result["explanation"],
         "code": result["code"],
     }
+
+class GenerateProjectRequest(BaseModel):
+    prompt: str
+
+@app.post("/generate-project")
+def generate_project(request: GenerateProjectRequest):
+
+    model_manager.switch("qwen-coder")
+
+    response = model_manager.generate_project(
+        request.prompt
+    )
+
+    return response
