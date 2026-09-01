@@ -111,12 +111,15 @@ class GenerateCodeRequest(BaseModel):
 
 @app.post("/generate-code")
 def generate_code(request: GenerateCodeRequest):
+
     model_manager.switch("qwen-coder")
-    response = model_manager.generate(
+
+    result = model_manager.generate(
         request.prompt
     )
 
     return {
         "model": "qwen-coder",
-        "response": response,
+        "response": result["explanation"],
+        "code": result["code"],
     }
