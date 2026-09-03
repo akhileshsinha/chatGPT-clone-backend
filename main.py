@@ -3,6 +3,10 @@ from pydantic import BaseModel
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from pathlib import Path
+import shutil
+import uuid
+from services.document_processor import extract_text
 
 load_dotenv()
 
@@ -14,6 +18,16 @@ from services.job_service import LinkedInJobService
 
 app = FastAPI()
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".xlsx",
+    ".pptx",
+}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -24,6 +38,56 @@ app.add_middleware(
 
 model_manager = ModelManager()
 job_service = LinkedInJobService()
+
+@app.post("/upload-document")
+async def upload_document(
+        file: UploadFile = File(...)
+):
+    extension = Path(file.filename).suffix.lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        return {
+            "error": (
+                f"Unsupported file type: {extension}. "
+                "Supported: PDF, DOCX, XLSX, PPTX."
+            )
+        }
+
+    document_id = str(uuid.uuid4())
+
+    stored_filename = (
+        f"{document_id}{extension}"
+    )
+
+    file_path = UPLOAD_DIR / stored_filename
+
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer
+        )
+
+    try:
+        extracted_text = extract_text(
+            str(file_path)
+        )
+
+        return {
+            "document_id": document_id,
+            "filename": file.filename,
+            "file_type": extension,
+            "status": "processed",
+            "text": extracted_text,
+        }
+
+    except Exception as e:
+        return {
+            "document_id": document_id,
+            "filename": file.filename,
+            "file_type": extension,
+            "status": "processing_failed",
+            "error": str(e),
+        }
 
 class GenerateRequest(BaseModel):
     prompt: str
