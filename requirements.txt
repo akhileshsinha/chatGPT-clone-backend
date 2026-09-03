@@ -47,3 +47,5 @@ python-pptx
 openpyxl
 chromadb
 sentence-transformers
+sentence-transformers
+faiss-cpu

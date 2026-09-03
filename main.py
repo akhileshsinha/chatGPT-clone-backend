@@ -7,13 +7,14 @@ from pathlib import Path
 import shutil
 import uuid
 from services.document_processor import extract_text
+from services.rag_service import RAGService
 
 load_dotenv()
 
 
 from model_manager import ModelManager
 from services.job_service import LinkedInJobService
-
+rag_service = RAGService()
 
 
 app = FastAPI()
@@ -71,6 +72,14 @@ async def upload_document(
         extracted_text = extract_text(
             str(file_path)
         )
+        chunks = rag_service.chunk_text(
+            extracted_text
+        )
+
+        rag_result = rag_service.save_document(
+            document_id,
+            chunks
+)
 
         return {
             "document_id": document_id,
@@ -78,6 +87,8 @@ async def upload_document(
             "file_type": extension,
             "status": "processed",
             "text": extracted_text,
+            "chunks": rag_result["chunk_count"],
+            "embedding_dimension": rag_result["embedding_dimension"],
         }
 
     except Exception as e:
@@ -219,3 +230,47 @@ def generate_project(request: GenerateProjectRequest):
     )
 
     return response
+
+
+class AskDocumentRequest(BaseModel):
+    document_id: str
+    question: str
+
+@app.post("/ask-document")
+def ask_document(
+        request: AskDocumentRequest
+):
+    model_manager.switch("qwen")
+
+    results = rag_service.search(
+        request.document_id,
+        request.question,
+        top_k=5,
+    )
+
+    context = "\n\n".join(
+        result["text"]
+        for result in results
+    )
+
+    prompt = f"""
+Answer the user's question using only the provided document context.
+
+If the answer is not available in the context, say:
+"I could not find the answer in the document."
+
+Document context:
+{context}
+
+User question:
+{request.question}
+"""
+
+    response = model_manager.generate(prompt)
+
+    return {
+        "document_id": request.document_id,
+        "question": request.question,
+        "answer": response,
+        "sources": results,
+    }

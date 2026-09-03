@@ -17,8 +17,8 @@ class QwenModel:
 
         print("Qwen3-4B loaded.")
 
+    
     def generate(self, prompt):
-
         if self.pipe is None:
             self.load()
 
@@ -38,7 +38,8 @@ class QwenModel:
 
         result = self.pipe(
             prompt_text,
-            max_new_tokens=2048,
+            max_new_tokens=512,
+            do_sample=False,
         )
 
         response = result[0]["generated_text"]
