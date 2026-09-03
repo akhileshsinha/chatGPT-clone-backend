@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 from pathlib import Path
 import shutil
 import uuid
-from services.document_processor import extract_text
+from services.document_processor import extract_document
+
 from services.rag_service import RAGService
 
 load_dotenv()
@@ -44,7 +45,9 @@ job_service = LinkedInJobService()
 async def upload_document(
         file: UploadFile = File(...)
 ):
-    extension = Path(file.filename).suffix.lower()
+    extension = Path(
+        file.filename
+    ).suffix.lower()
 
     if extension not in ALLOWED_EXTENSIONS:
         return {
@@ -60,26 +63,35 @@ async def upload_document(
         f"{document_id}{extension}"
     )
 
-    file_path = UPLOAD_DIR / stored_filename
+    file_path = (
+            UPLOAD_DIR /
+            stored_filename
+    )
 
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(
             file.file,
-            buffer
+            buffer,
         )
 
     try:
-        extracted_text = extract_text(
+        documents = extract_document(
             str(file_path)
         )
-        chunks = rag_service.chunk_text(
-            extracted_text
+
+        chunks = rag_service.chunk_documents(
+            documents
         )
 
         rag_result = rag_service.save_document(
             document_id,
-            chunks
-)
+            chunks,
+        )
+
+        extracted_text = "\n\n".join(
+            f"{item['source']}:\n{item['text']}"
+            for item in documents
+        )
 
         return {
             "document_id": document_id,
@@ -88,7 +100,11 @@ async def upload_document(
             "status": "processed",
             "text": extracted_text,
             "chunks": rag_result["chunk_count"],
-            "embedding_dimension": rag_result["embedding_dimension"],
+            "embedding_dimension": (
+                rag_result[
+                    "embedding_dimension"
+                ]
+            ),
         }
 
     except Exception as e:
@@ -99,7 +115,6 @@ async def upload_document(
             "status": "processing_failed",
             "error": str(e),
         }
-
 class GenerateRequest(BaseModel):
     prompt: str
     model: str = "qwen"
@@ -248,16 +263,45 @@ def ask_document(
         top_k=5,
     )
 
-    context = "\n\n".join(
-        result["text"]
-        for result in results
-    )
+    if not results:
+        return {
+            "document_id": request.document_id,
+            "question": request.question,
+            "answer": (
+                "I could not find the answer "
+                "in the document."
+            ),
+            "sources": [],
+        }
+
+    context_parts = []
+
+    for index, result in enumerate(
+            results,
+            start=1,
+    ):
+        context_parts.append(
+            f"""
+Source {index} ({result['source']}):
+{result['text']}
+"""
+        )
+
+    context = "\n".join(context_parts)
 
     prompt = f"""
-Answer the user's question using only the provided document context.
+Answer the user's question using only the
+provided document context.
 
-If the answer is not available in the context, say:
-"I could not find the answer in the document."
+Rules:
+- Do not use outside knowledge.
+- If the answer is not available in the context,
+  say exactly:
+  "I could not find the answer in the document."
+- Give a concise and accurate answer.
+- When useful, mention the source such as
+  Page 3, Slide 5, or a sheet name.
+- Do not invent information.
 
 Document context:
 {context}
@@ -266,7 +310,9 @@ User question:
 {request.question}
 """
 
-    response = model_manager.generate(prompt)
+    response = model_manager.generate(
+        prompt
+    )
 
     return {
         "document_id": request.document_id,

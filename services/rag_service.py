@@ -10,6 +10,8 @@ VECTOR_DIR.mkdir(exist_ok=True)
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
+SIMILARITY_THRESHOLD = 0.30
+
 
 class RAGService:
 
@@ -46,22 +48,61 @@ class RAGService:
 
         return chunks
 
-    def create_embeddings(self, chunks):
+    def chunk_documents(
+            self,
+            documents: list[dict],
+    ):
+        chunks = []
+
+        for document in documents:
+            source = document["source"]
+            source_type = document["type"]
+            text = document["text"]
+
+            text_chunks = self.chunk_text(text)
+
+            for chunk in text_chunks:
+                chunks.append({
+                    "text": chunk,
+                    "source": source,
+                    "type": source_type,
+                })
+
+        return chunks
+
+    def create_embeddings(
+            self,
+            chunks: list[dict],
+    ):
+        texts = [
+            chunk["text"]
+            for chunk in chunks
+        ]
+
         return self.embedding_model.encode(
-            chunks,
-            normalize_embeddings=True
+            texts,
+            normalize_embeddings=True,
         )
 
     def save_document(
             self,
             document_id: str,
-            chunks: list[str],
+            chunks: list[dict],
     ):
-        embeddings = self.create_embeddings(chunks)
+        if not chunks:
+            raise ValueError(
+                "No document content found."
+            )
+
+        embeddings = self.create_embeddings(
+            chunks
+        )
 
         dimension = embeddings.shape[1]
 
-        index = faiss.IndexFlatIP(dimension)
+        index = faiss.IndexFlatIP(
+            dimension
+        )
 
         index.add(embeddings)
 
@@ -77,7 +118,7 @@ class RAGService:
 
         faiss.write_index(
             index,
-            str(index_path)
+            str(index_path),
         )
 
         metadata = {
@@ -86,8 +127,11 @@ class RAGService:
         }
 
         metadata_path.write_text(
-            json.dumps(metadata, ensure_ascii=False),
-            encoding="utf-8"
+            json.dumps(
+                metadata,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
         )
 
         return {
@@ -127,29 +171,47 @@ class RAGService:
             )
         )
 
-        query_embedding = self.embedding_model.encode(
-            [query],
-            normalize_embeddings=True
+        query_embedding = (
+            self.embedding_model.encode(
+                [query],
+                normalize_embeddings=True,
+            )
+        )
+
+        search_count = min(
+            max(top_k * 2, top_k),
+            index.ntotal,
         )
 
         scores, indices = index.search(
             query_embedding,
-            min(top_k, index.ntotal)
+            search_count,
         )
 
         results = []
 
         for score, index_id in zip(
                 scores[0],
-                indices[0]
+                indices[0],
         ):
             if index_id < 0:
                 continue
 
+            score = float(score)
+
+            if score < SIMILARITY_THRESHOLD:
+                continue
+
+            chunk = metadata["chunks"][index_id]
+
             results.append({
-                "text": metadata["chunks"][index_id],
-                "score": float(score),
+                "text": chunk["text"],
+                "source": chunk["source"],
+                "type": chunk["type"],
+                "score": score,
             })
 
-        return results
+            if len(results) >= top_k:
+                break
 
+        return results
