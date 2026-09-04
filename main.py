@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,9 +6,12 @@ from dotenv import load_dotenv
 from pathlib import Path
 import shutil
 import uuid
+import json
 from services.document_processor import extract_document
+from services.ppt_generator import PPTGenerator
 
 from services.rag_service import RAGService
+from fastapi.responses import FileResponse
 
 load_dotenv()
 
@@ -16,6 +19,7 @@ load_dotenv()
 from model_manager import ModelManager
 from services.job_service import LinkedInJobService
 rag_service = RAGService()
+ppt_generator = PPTGenerator()
 
 
 app = FastAPI()
@@ -40,6 +44,29 @@ app.add_middleware(
 
 model_manager = ModelManager()
 job_service = LinkedInJobService()
+
+@app.get("/download-document/{file_id}")
+def download_document(file_id: str):
+    output_dir = Path("generated_documents")
+
+    matches = list(
+        output_dir.glob(f"{file_id}.pptx")
+    )
+
+    if not matches:
+        raise HTTPException(
+            status_code=404,
+            detail="Generated document not found."
+        )
+
+    return FileResponse(
+        path=str(matches[0]),
+        filename=matches[0].name,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "presentationml.presentation"
+        ),
+    )
 
 @app.post("/upload-document")
 async def upload_document(
@@ -115,11 +142,83 @@ async def upload_document(
             "status": "processing_failed",
             "error": str(e),
         }
+
+class GeneratePPTRequest(BaseModel):
+    prompt: str
+
+@app.post("/generate-ppt")
+def generate_ppt(request: GeneratePPTRequest):
+    model_manager.switch("qwen")
+
+    prompt = f"""
+Create a professional PowerPoint presentation based on the
+following user request.
+
+Return ONLY valid JSON.
+
+JSON format:
+{{
+    "title": "Presentation title",
+    "slides": [
+        {{
+            "title": "Slide title",
+            "bullets": [
+                "Bullet 1",
+                "Bullet 2",
+                "Bullet 3"
+            ]
+        }}
+    ]
+}}
+
+Requirements:
+- Create 5 to 8 slides.
+- Keep each slide concise.
+- Use professional business language.
+- Do not use Markdown.
+- Do not add explanations outside the JSON.
+
+User request:
+{request.prompt}
+"""
+
+    response = model_manager.generate(prompt)
+
+    try:
+        presentation_data = json.loads(response)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid presentation JSON."
+        )
+
+    output_dir = Path("generated_documents")
+    output_dir.mkdir(exist_ok=True)
+
+    file_id = str(uuid.uuid4())
+
+    output_path = (
+            output_dir /
+            f"{file_id}.pptx"
+    )
+
+    ppt_generator.generate(
+        title=presentation_data["title"],
+        slides=presentation_data["slides"],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "generated",
+        "file_id": file_id,
+        "filename": f"{presentation_data['title']}.pptx",
+        "download_url": f"/download-document/{file_id}",
+    }
+
+
 class GenerateRequest(BaseModel):
     prompt: str
     model: str = "qwen"
-
-
 
 @app.post("/generate")
 def generate(request: GenerateRequest):
