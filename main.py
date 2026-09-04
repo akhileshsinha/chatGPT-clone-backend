@@ -9,6 +9,8 @@ import uuid
 import json
 from services.document_processor import extract_document
 from services.ppt_generator import PPTGenerator
+from services.excel_generator import ExcelGenerator
+from services.word_generator import WordGenerator
 
 from services.rag_service import RAGService
 from fastapi.responses import FileResponse
@@ -20,6 +22,8 @@ from model_manager import ModelManager
 from services.job_service import LinkedInJobService
 rag_service = RAGService()
 ppt_generator = PPTGenerator()
+excel_generator = ExcelGenerator()
+word_generator = WordGenerator()
 
 
 app = FastAPI()
@@ -46,28 +50,36 @@ model_manager = ModelManager()
 job_service = LinkedInJobService()
 
 @app.get("/download-document/{file_id}")
+@app.get("/download-document/{file_id}")
 def download_document(file_id: str):
     output_dir = Path("generated_documents")
 
-    matches = list(
-        output_dir.glob(f"{file_id}.pptx")
-    )
-
-    if not matches:
-        raise HTTPException(
-            status_code=404,
-            detail="Generated document not found."
-        )
-
-    return FileResponse(
-        path=str(matches[0]),
-        filename=matches[0].name,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument."
-            "presentationml.presentation"
+    file_types = {
+        ".pptx": (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         ),
-    )
+        ".xlsx": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        ".docx": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+    }
 
+    for extension, media_type in file_types.items():
+        file_path = output_dir / f"{file_id}{extension}"
+
+        if file_path.exists():
+            return FileResponse(
+                path=str(file_path),
+                filename=file_path.name,
+                media_type=media_type,
+            )
+
+    raise HTTPException(
+        status_code=404,
+        detail="Generated document not found.",
+    )
 @app.post("/upload-document")
 async def upload_document(
         file: UploadFile = File(...)
@@ -142,6 +154,160 @@ async def upload_document(
             "status": "processing_failed",
             "error": str(e),
         }
+
+class GenerateWordRequest(BaseModel):
+    prompt: str
+@app.post("/generate-word")
+def generate_word(
+        request: GenerateWordRequest
+):
+    model_manager.switch("qwen")
+
+    prompt = f"""
+Create a professional Word document based on the user's request.
+
+Return ONLY valid JSON.
+
+Format:
+{{
+    "title": "Document title",
+    "sections": [
+        {{
+            "heading": "Section heading",
+            "content": "Section content",
+            "bullets": [
+                "Bullet 1",
+                "Bullet 2",
+                "Bullet 3"
+            ]
+        }}
+    ]
+}}
+
+Requirements:
+- Create logical sections.
+- Use professional language.
+- Keep the content well structured.
+- Use bullets where appropriate.
+- Do not use Markdown.
+- Return ONLY valid JSON.
+
+User request:
+{request.prompt}
+"""
+
+    response = model_manager.generate(prompt)
+
+    try:
+        document_data = json.loads(response)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid Word document JSON."
+        )
+
+    output_dir = Path("generated_documents")
+    output_dir.mkdir(exist_ok=True)
+
+    file_id = str(uuid.uuid4())
+
+    output_path = (
+            output_dir /
+            f"{file_id}.docx"
+    )
+
+    word_generator.generate(
+        title=document_data["title"],
+        sections=document_data["sections"],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "generated",
+        "file_id": file_id,
+        "filename": f"{document_data['title']}.docx",
+        "download_url": (
+            f"/download-document/{file_id}"
+        ),
+    }
+
+
+class GenerateExcelRequest(BaseModel):
+    prompt: str
+
+@app.post("/generate-excel")
+def generate_excel(
+        request: GenerateExcelRequest
+):
+    model_manager.switch("qwen")
+
+    prompt = f"""
+Create an Excel workbook based on the user's request.
+
+Return ONLY valid JSON.
+
+Format:
+{{
+    "sheets": [
+        {{
+            "name": "Sheet name",
+            "headers": [
+                "Column 1",
+                "Column 2"
+            ],
+            "rows": [
+                ["Value 1", "Value 2"],
+                ["Value 3", "Value 4"]
+            ]
+        }}
+    ]
+}}
+
+Requirements:
+- Create only the sheets required by the request.
+- Use meaningful sheet names.
+- Include appropriate column headers.
+- Generate realistic and useful data.
+- Do not use Markdown.
+- Return ONLY JSON.
+
+User request:
+{request.prompt}
+"""
+
+    response = model_manager.generate(prompt)
+
+    try:
+        workbook_data = json.loads(response)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid Excel JSON."
+        )
+
+    output_dir = Path("generated_documents")
+    output_dir.mkdir(exist_ok=True)
+
+    file_id = str(uuid.uuid4())
+
+    output_path = (
+            output_dir /
+            f"{file_id}.xlsx"
+    )
+
+    excel_generator.generate(
+        sheets=workbook_data["sheets"],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "generated",
+        "file_id": file_id,
+        "filename": "generated.xlsx",
+        "download_url": (
+            f"/download-document/{file_id}"
+        ),
+    }
 
 class GeneratePPTRequest(BaseModel):
     prompt: str
