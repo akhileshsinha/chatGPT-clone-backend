@@ -14,6 +14,12 @@ from services.word_generator import WordGenerator
 from services.pdf_generator import PDFGenerator
 from services.ppt_parser import PPTParser
 from services.ppt_modifier import PPTModifier
+from services.excel_parser import ExcelParser
+from services.excel_modifier import ExcelModifier
+from services.word_parser import WordParser
+from services.word_modifier import WordModifier
+from services.pdf_parser import PDFParser
+from services.pdf_modifier import PDFModifier
 
 from services.rag_service import RAGService
 from fastapi.responses import FileResponse
@@ -31,6 +37,12 @@ word_generator = WordGenerator()
 pdf_generator = PDFGenerator()
 ppt_parser = PPTParser()
 ppt_modifier = PPTModifier()
+excel_parser = ExcelParser()
+excel_modifier = ExcelModifier()
+word_parser = WordParser()
+word_modifier = WordModifier()
+pdf_parser = PDFParser()
+pdf_modifier = PDFModifier()
 
 
 app = FastAPI()
@@ -168,6 +180,440 @@ async def upload_document(
 
 class ModifyDocumentRequest(BaseModel):
     instruction: str
+
+@app.post("/modify-pdf")
+async def modify_pdf(
+        file: UploadFile = File(...),
+        instruction: str = Form(...),
+):
+    extension = Path(
+        file.filename
+    ).suffix.lower()
+
+    if extension != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported.",
+        )
+
+    input_id = str(uuid.uuid4())
+
+    input_path = (
+            UPLOAD_DIR /
+            f"{input_id}.pdf"
+    )
+
+    with input_path.open("wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer,
+        )
+
+    document_data = pdf_parser.extract(
+        str(input_path)
+    )
+
+    model_manager.switch("qwen")
+
+    prompt = f"""
+You are modifying an existing PDF document.
+
+Existing PDF:
+
+{json.dumps(
+        document_data,
+        indent=2,
+        ensure_ascii=False,
+    )}
+
+User modification request:
+
+{instruction}
+
+Return ONLY valid JSON.
+
+Format:
+
+{{
+    "modifications": [
+        {{
+            "action": "add_text",
+            "page": 1,
+            "text": "Additional text"
+        }}
+    ]
+}}
+
+Supported actions:
+
+1. add_text
+
+{{
+    "action": "add_text",
+    "page": 1,
+    "text": "Text to add"
+}}
+
+2. remove_page
+
+{{
+    "action": "remove_page",
+    "page": 3
+}}
+
+Only return the modifications required.
+Do not return explanations.
+"""
+
+    response = model_manager.generate(
+        prompt
+    )
+
+    try:
+        modification_data = json.loads(
+            response
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid PDF modification JSON.",
+        )
+
+    output_id = str(uuid.uuid4())
+
+    output_path = (
+            GENERATED_DIR /
+            f"{output_id}.pdf"
+    )
+
+    pdf_modifier.modify(
+        file_path=str(input_path),
+        modifications=modification_data[
+            "modifications"
+        ],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "modified",
+        "file_id": output_id,
+        "filename": f"modified_{file.filename}",
+        "download_url": (
+            f"/download-document/{output_id}"
+        ),
+    }
+
+@app.post("/modify-word")
+async def modify_word(
+        file: UploadFile = File(...),
+        instruction: str = Form(...),
+):
+    extension = Path(
+        file.filename
+    ).suffix.lower()
+
+    if extension != ".docx":
+        raise HTTPException(
+            status_code=400,
+            detail="Only DOCX files are supported.",
+        )
+
+    input_id = str(uuid.uuid4())
+
+    input_path = (
+            UPLOAD_DIR /
+            f"{input_id}.docx"
+    )
+
+    with input_path.open("wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer,
+        )
+
+    document_data = word_parser.extract(
+        str(input_path)
+    )
+
+    model_manager.switch("qwen")
+
+    prompt = f"""
+You are modifying an existing Word document.
+
+Existing document:
+
+{json.dumps(
+        document_data,
+        indent=2,
+        ensure_ascii=False,
+    )}
+
+User modification request:
+
+{instruction}
+
+Return ONLY valid JSON.
+
+Format:
+
+{{
+    "modifications": [
+        {{
+            "action": "replace_text",
+            "old_text": "Old text",
+            "new_text": "New text"
+        }}
+    ]
+}}
+
+Supported actions:
+
+1. replace_text
+
+{{
+    "action": "replace_text",
+    "old_text": "Old text",
+    "new_text": "New text"
+}}
+
+2. update_paragraph
+
+{{
+    "action": "update_paragraph",
+    "paragraph_index": 3,
+    "text": "Updated paragraph"
+}}
+
+3. add_paragraph
+
+{{
+    "action": "add_paragraph",
+    "text": "New paragraph"
+}}
+
+4. remove_paragraph
+
+{{
+    "action": "remove_paragraph",
+    "paragraph_index": 4
+}}
+
+5. add_heading
+
+{{
+    "action": "add_heading",
+    "text": "New Section",
+    "level": 1
+}}
+
+Only return the modifications required.
+Do not return explanations.
+"""
+
+    response = model_manager.generate(
+        prompt
+    )
+
+    try:
+        modification_data = json.loads(
+            response
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid modification JSON.",
+        )
+
+    output_id = str(uuid.uuid4())
+
+    output_path = (
+            GENERATED_DIR /
+            f"{output_id}.docx"
+    )
+
+    word_modifier.modify(
+        file_path=str(input_path),
+        modifications=modification_data[
+            "modifications"
+        ],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "modified",
+        "file_id": output_id,
+        "filename": f"modified_{file.filename}",
+        "download_url": (
+            f"/download-document/{output_id}"
+        ),
+    }
+
+@app.post("/modify-excel")
+async def modify_excel(
+        file: UploadFile = File(...),
+        instruction: str = Form(...),
+):
+    extension = Path(
+        file.filename
+    ).suffix.lower()
+
+    if extension not in [".xlsx", ".xlsm"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Only Excel files are supported.",
+        )
+
+    input_id = str(uuid.uuid4())
+
+    input_path = (
+            UPLOAD_DIR /
+            f"{input_id}{extension}"
+    )
+
+    with input_path.open("wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer,
+        )
+
+    workbook_data = excel_parser.extract(
+        str(input_path)
+    )
+
+    model_manager.switch("qwen")
+
+    prompt = f"""
+You are modifying an existing Excel workbook.
+
+Existing workbook:
+
+{json.dumps(workbook_data, indent=2, default=str)}
+
+User modification request:
+
+{instruction}
+
+Return ONLY valid JSON.
+
+Format:
+
+{{
+    "modifications": [
+        {{
+            "action": "update_cell",
+            "sheet": "Employees",
+            "cell": "B2",
+            "value": "Bangalore"
+        }}
+    ]
+}}
+
+Supported actions:
+
+1. update_cell
+
+{{
+    "action": "update_cell",
+    "sheet": "Sheet1",
+    "cell": "A1",
+    "value": "New value"
+}}
+
+2. replace_text
+
+{{
+    "action": "replace_text",
+    "sheet": "Sheet1",
+    "old_text": "Hyderabad",
+    "new_text": "Bangalore"
+}}
+
+3. add_column
+
+{{
+    "action": "add_column",
+    "sheet": "Sheet1",
+    "column_index": 5,
+    "header": "Status",
+    "values": ["Active", "Inactive"]
+}}
+
+4. remove_column
+
+{{
+    "action": "remove_column",
+    "sheet": "Sheet1",
+    "column_index": 5
+}}
+
+5. add_row
+
+{{
+    "action": "add_row",
+    "sheet": "Sheet1",
+    "values": ["John", "Hyderabad", "Male"]
+}}
+
+6. remove_row
+
+{{
+    "action": "remove_row",
+    "sheet": "Sheet1",
+    "row_index": 4
+}}
+
+7. create_sheet
+
+{{
+    "action": "create_sheet",
+    "name": "Summary",
+    "headers": ["Department", "Count"],
+    "rows": [
+        ["Engineering", 10],
+        ["Product", 5]
+    ]
+}}
+
+Only return modifications required by the user's request.
+"""
+
+    response = model_manager.generate(
+        prompt
+    )
+
+    try:
+        modification_data = json.loads(
+            response
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid modification JSON.",
+        )
+
+    output_id = str(uuid.uuid4())
+
+    output_path = (
+            GENERATED_DIR /
+            f"{output_id}{extension}"
+    )
+
+    excel_modifier.modify(
+        file_path=str(input_path),
+        modifications=modification_data[
+            "modifications"
+        ],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "modified",
+        "file_id": output_id,
+        "filename": f"modified_{file.filename}",
+        "download_url": (
+            f"/download-document/{output_id}"
+        ),
+    }
 
 @app.post("/modify-ppt")
 async def modify_ppt(
