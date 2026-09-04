@@ -11,6 +11,9 @@ from services.document_processor import extract_document
 from services.ppt_generator import PPTGenerator
 from services.excel_generator import ExcelGenerator
 from services.word_generator import WordGenerator
+from services.pdf_generator import PDFGenerator
+from services.ppt_parser import PPTParser
+from services.ppt_modifier import PPTModifier
 
 from services.rag_service import RAGService
 from fastapi.responses import FileResponse
@@ -20,16 +23,23 @@ load_dotenv()
 
 from model_manager import ModelManager
 from services.job_service import LinkedInJobService
+
 rag_service = RAGService()
 ppt_generator = PPTGenerator()
 excel_generator = ExcelGenerator()
 word_generator = WordGenerator()
+pdf_generator = PDFGenerator()
+ppt_parser = PPTParser()
+ppt_modifier = PPTModifier()
 
 
 app = FastAPI()
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+GENERATED_DIR = Path("generated_documents")
+GENERATED_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {
     ".pdf",
@@ -64,6 +74,7 @@ def download_document(file_id: str):
         ".docx": (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ),
+        ".pdf": "application/pdf",
     }
 
     for extension, media_type in file_types.items():
@@ -154,6 +165,195 @@ async def upload_document(
             "status": "processing_failed",
             "error": str(e),
         }
+
+class ModifyDocumentRequest(BaseModel):
+    instruction: str
+
+@app.post("/modify-ppt")
+async def modify_ppt(
+        file: UploadFile = File(...),
+        instruction: str = Form(...),
+):
+    extension = Path(
+        file.filename
+    ).suffix.lower()
+
+    if extension != ".pptx":
+        raise HTTPException(
+            status_code=400,
+            detail="Only PPTX files are supported currently.",
+        )
+
+    input_id = str(uuid.uuid4())
+
+    input_path = (
+            UPLOAD_DIR /
+            f"{input_id}.pptx"
+    )
+
+    with input_path.open("wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer,
+        )
+
+    slides = ppt_parser.extract(
+        str(input_path)
+    )
+
+    model_manager.switch("qwen")
+
+    prompt = f"""
+You are modifying an existing PowerPoint presentation.
+
+Existing presentation:
+
+{json.dumps(slides, indent=2)}
+
+User modification request:
+
+{instruction}
+
+Return ONLY valid JSON.
+
+Format:
+
+{{
+    "modifications": [
+        {{
+            "action": "change_title",
+            "slide": 1,
+            "value": "New title"
+        }},
+        {{
+            "action": "replace_text",
+            "old_text": "Old text",
+            "new_text": "New text"
+        }}
+    ]
+}}
+
+Supported actions:
+- change_title
+- replace_text
+
+Only return modifications required by the user's request.
+"""
+
+    response = model_manager.generate(
+        prompt
+    )
+
+    try:
+        modification_data = json.loads(
+            response
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid modification JSON.",
+        )
+
+    output_id = str(uuid.uuid4())
+
+    output_path = (
+            GENERATED_DIR /
+            f"{output_id}.pptx"
+    )
+
+    ppt_modifier.modify(
+        file_path=str(input_path),
+        modifications=modification_data[
+            "modifications"
+        ],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "modified",
+        "file_id": output_id,
+        "filename": f"modified_{file.filename}",
+        "download_url": (
+            f"/download-document/{output_id}"
+        ),
+    }
+
+class GeneratePDFRequest(BaseModel):
+    prompt: str
+
+@app.post("/generate-pdf")
+def generate_pdf(
+        request: GeneratePDFRequest
+):
+    model_manager.switch("qwen")
+
+    prompt = f"""
+Create a professional PDF document based on the user's request.
+
+Return ONLY valid JSON.
+
+Format:
+{{
+    "title": "Document title",
+    "sections": [
+        {{
+            "heading": "Section heading",
+            "content": "Section content",
+            "bullets": [
+                "Bullet 1",
+                "Bullet 2",
+                "Bullet 3"
+            ]
+        }}
+    ]
+}}
+
+Requirements:
+- Create logical sections.
+- Use professional business language.
+- Keep the content concise and well structured.
+- Use bullets where appropriate.
+- Do not use Markdown.
+- Return ONLY valid JSON.
+
+User request:
+{request.prompt}
+"""
+
+    response = model_manager.generate(prompt)
+
+    try:
+        document_data = json.loads(response)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Qwen returned invalid PDF JSON."
+        )
+
+    output_dir = Path("generated_documents")
+    output_dir.mkdir(exist_ok=True)
+
+    file_id = str(uuid.uuid4())
+
+    output_path = (
+            output_dir /
+            f"{file_id}.pdf"
+    )
+
+    pdf_generator.generate(
+        title=document_data["title"],
+        sections=document_data["sections"],
+        output_path=str(output_path),
+    )
+
+    return {
+        "status": "generated",
+        "file_id": file_id,
+        "filename": f"{document_data['title']}.pdf",
+        "download_url": (
+            f"/download-document/{file_id}"
+        ),
+    }
 
 class GenerateWordRequest(BaseModel):
     prompt: str
